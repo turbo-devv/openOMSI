@@ -60,6 +60,10 @@ pub struct MapSpline {
     /// (s + tex_offset)`, so a chain's textures run on across its joints; Omsi.exe
     /// sub_79a8ec puts it into TSplineSegment+0x1a0).
     pub tex_offset: f64,
+    /// The authored chain offset in tile version 11 and newer, including zero.
+    /// Older records have none and their chain must be reconstructed from links.
+    /// Keep this on the record: chrono additions can have a different tile version.
+    pub map_chain_offset: Option<f64>,
     pub mirror: bool,
     pub is_h: bool,
     pub rules: Vec<MapRule>,
@@ -442,6 +446,9 @@ impl Tile {
                         skew_start,
                         skew_end,
                         tex_offset,
+                        map_chain_offset: has(t.version, 11).then(|| {
+                            if tex_offset.is_finite() && tex_offset > 0.0 { tex_offset } else { 0.0 }
+                        }),
                         mirror,
                         is_h,
                         rules: Vec::new(),
@@ -690,6 +697,33 @@ mod tests {
 
     fn tile(text: &str) -> Tile {
         Tile::parse(&CfgFile::from_str("tile_0_0.map", text))
+    }
+
+    #[test]
+    fn chain_offsets_keep_each_records_authored_version() {
+        let record = |version, offset| {
+            let links = if version >= 11 || version == 0 { "0\n0\n" } else { "-1\n" };
+            let chain = if version >= 14 || version == 0 {
+                format!("0\n0\n{offset}\n")
+            } else if version >= 11 {
+                format!("{offset}\n")
+            } else {
+                String::new()
+            };
+            tile(&format!("[version]\n{version}\n\n[spline]\n0\nsynthetic.sli\n10\n{links}0\n0\n0\n0\n50\n0\n0\n0\n0\n0\n{chain}"))
+        };
+        for version in [0, 10, 11, 14] {
+            for offset in [0.0, 600.0] {
+                let parsed = record(version, offset);
+                let expected = (version >= 11 || version == 0).then_some(offset);
+                assert_eq!(parsed.splines[0].map_chain_offset, expected);
+            }
+        }
+        let mut base = record(10, 0.0);
+        base.apply_chrono(&record(14, 600.0));
+        assert_eq!(base.version, 10);
+        assert_eq!(base.splines[0].map_chain_offset, None);
+        assert_eq!(base.splines[1].map_chain_offset, Some(600.0));
     }
 
     const BASE: &str = "[version]\n14\n\n\
