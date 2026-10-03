@@ -435,6 +435,18 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
                 }
             }
         }
+        // (host → us) the server's dispatch takes the duty back: free drive, as the game menu's
+        // "end the duty"; the host hears `duty-off-ok` (there was one) or `duty-off-none`
+        "duty-off" if from == 1 => {
+            let had = app.duty.take().map(|d| format!("{} {}", d.line, d.tour));
+            log::info!("LAN: the server took our duty back ({})", had.as_deref().unwrap_or("we had none"));
+            if had.is_some() {
+                app.service_msg = Some(("The dispatch took the duty back: free drive".into(), 6.0));
+            }
+            if let Some(l) = app.lan.as_mut() {
+                l.command(1, if had.is_some() { "duty-off-ok" } else { "duty-off-none" });
+            }
+        }
         "admin-locked" if from == 1 => app.service_msg = Some(("Too many wrong admin passwords: try again later".into(), 4.0)),
         "admin-ok" if from == 1 => {
             app.is_admin = true;
@@ -606,6 +618,12 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                         }
                     }
                 }
+                // the duty taken back from a player: `duty-off <id>` (see `command`)
+                "duty-off" => {
+                    if let Some(id) = id {
+                        lan.command(id, "duty-off");
+                    }
+                }
                 "bringall" => {
                     if let Some((pos, h)) = positions(from) {
                         let ids: Vec<u32> = lan.peers().map(|p| p.pose.id).filter(|id| *id != from && *id != lan.my_id).collect();
@@ -640,6 +658,8 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
         }
         // a player's game took the duty it was given (`duty`), or could not: said for the tool
         // that gave it
+        "duty-off-ok" => log::info!("server: player {from} left the duty"),
+        "duty-off-none" => log::info!("server: player {from} had no duty to leave"),
         "duty-ok" => log::info!("server: player {from} took duty {}", arg.trim()),
         "duty-no" => log::info!("server: player {from} could not take the duty: {}", arg.trim()),
         // a player's game showed a notification (`notify`): said for the tool that sent it
