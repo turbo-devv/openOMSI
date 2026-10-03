@@ -1215,6 +1215,17 @@ fn array_path() -> ArrayPath {
     }
 }
 
+/// Whether the camera group has the enhanced path's three textures (the reflection probe,
+/// the sky table, the sky cube). The OpenGL backend numbers every texture of a pipeline
+/// layout in one row of sixteen (wgpu-hal's `MAX_TEXTURE_SLOTS`), whatever stage reads it:
+/// where the scene's arrays are textures as well (three more), the camera and material
+/// groups came to 19 and making the scene pipelines panicked ("index out of bounds: the
+/// len is 16 but the index is 16", Mali on Android, #1133). There the three are left out
+/// and the enhanced path with them.
+fn camera_enhanced_textures() -> bool {
+    !(gl_backend() && array_path() != ArrayPath::Storage)
+}
+
 /// Texels per row of an array kept as a texture (within every device's 2048).
 const ARRAY_TEX_WIDTH: u32 = 2048;
 
@@ -2209,7 +2220,7 @@ impl Renderer {
                     count: None,
                 },
                 array_layout_entry(10, wgpu::ShaderStages::VERTEX, false),
-                // enhanced: its lighting, the reflection probe, a clamped linear sampler, the sky table
+                // enhanced: its lighting and a clamped linear sampler (its textures: below)
                 wgpu::BindGroupLayoutEntry {
                     binding: 11,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -2221,39 +2232,9 @@ impl Renderer {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 12,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::Cube,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
                     binding: 13,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 14,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 17,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::Cube,
-                        multisampled: false,
-                    },
                     count: None,
                 },
                 // the tile light maps around the camera, and where they lie
@@ -2278,6 +2259,17 @@ impl Renderer {
                     count: None,
                 },
         ];
+        // the enhanced path's textures (see `camera_enhanced_textures`)
+        if camera_enhanced_textures() {
+            for (binding, view_dimension) in [(12, wgpu::TextureViewDimension::Cube), (14, wgpu::TextureViewDimension::D2), (17, wgpu::TextureViewDimension::Cube)] {
+                camera_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension, multisampled: false },
+                    count: None,
+                });
+            }
+        }
         // the point lights and their grid (see `ArrayPath::NoStorage`)
         if array_path() != ArrayPath::NoStorage {
             camera_entries.push(array_layout_entry(3, wgpu::ShaderStages::FRAGMENT, true));
@@ -3022,7 +3014,7 @@ impl Renderer {
             sky_pipeline: sky_pipeline_for(format, "fs_main"),
         };
         // the enhanced path: its own lighting in all three
-        let leave_out_enhanced = options.no_enhanced && (cfg!(target_os = "android") || adapter_name.to_ascii_lowercase().contains("opengl") || GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed));
+        let leave_out_enhanced = options.no_enhanced && (cfg!(target_os = "android") || adapter_name.to_ascii_lowercase().contains("opengl") || GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed)) || !camera_enhanced_textures();
         let hdr_pass = (!leave_out_enhanced).then(|| PassPipelines {
             pipelines: scene_pipelines(hdr_format, "fs_enhanced", msaa),
             rain_pipelines: scene_pipelines(hdr_format, "fs_enhanced", 1),
@@ -6795,24 +6787,8 @@ impl Renderer {
                     resource: self.enh_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 12,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self.probe.as_ref().expect("reflection probe").view,
-                    ),
-                },
-                wgpu::BindGroupEntry {
                     binding: 13,
                     resource: wgpu::BindingResource::Sampler(&self.lin_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 14,
-                    resource: wgpu::BindingResource::TextureView(&self.sky_lut_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 17,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self.probe.as_ref().expect("reflection probe").cube_view,
-                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 18,
@@ -6823,6 +6799,12 @@ impl Renderer {
                     resource: self.lm_uniform.as_entire_binding(),
                 },
         ];
+        if camera_enhanced_textures() {
+            let probe = self.probe.as_ref().expect("reflection probe");
+            entries.push(wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(&probe.view) });
+            entries.push(wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(&self.sky_lut_view) });
+            entries.push(wgpu::BindGroupEntry { binding: 17, resource: wgpu::BindingResource::TextureView(&probe.cube_view) });
+        }
         // (the point lights where the device has storage buffers for them)
         if array_path() != ArrayPath::NoStorage {
             entries.push(wgpu::BindGroupEntry { binding: 3, resource: light_buf.binding() });
