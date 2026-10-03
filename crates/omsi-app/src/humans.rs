@@ -1943,6 +1943,19 @@ impl Humans {
         std::mem::take(&mut self.footfalls)
     }
 
+    /// Everybody: (walking, waiting at a stop, in a bus).
+    pub fn counts(&self) -> (usize, usize, usize) {
+        let (mut walking, mut waiting, mut aboard) = (0, 0, 0);
+        for p in &self.people {
+            match (&p.place, &p.state) {
+                (Place::Bus(..), _) => aboard += 1,
+                (Place::Ground, State::Pax(x)) if x.inside.is_none() => waiting += 1,
+                (Place::Ground, _) => walking += 1,
+            }
+        }
+        (walking, waiting, aboard)
+    }
+
     /// People currently in the player's bus.
     pub fn riding(&self) -> usize {
         self.people

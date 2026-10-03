@@ -30,7 +30,9 @@ Players reach it two ways:
   That is what a free Cloudflare quick tunnel carries (`tunnel = 1` starts `cloudflared
   tunnel --url http://127.0.0.1:<web_port>` and prints the `https://….trycloudflare.com`
   address). The same port answers `GET /status` (JSON: name, motd, map, players,
-  max_players, time, weather, version, protocol) and `GET /icon.png`, which the launcher's
+  max_players, time, weather, version, protocol, and on a dedicated server `world`: its AI
+  cars, buses, cars asleep, parked cars, people walking, waiting and aboard, the traffic
+  density) and `GET /icon.png`, which the launcher's
   Multiplayer → Servers list shows. With an `admin_password` it also takes `POST /admin`
   from the machine itself: one admin command a line (`clock 30600`, `weather set
   Weather/#CAVOK.owt`, `say …`, `kick 3`, as the Administration menu sends them), the

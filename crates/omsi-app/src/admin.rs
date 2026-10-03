@@ -462,11 +462,30 @@ pub(crate) struct ServerAdmin {
     /// An admin chose this weather (`Weather/….owt`, checked against the installed ones by
     /// the host loop).
     pub set_weather: Option<String>,
+    /// An admin's traffic order, for the host loop (`traffic <density>`, `traffic clear`).
+    pub traffic: Option<TrafficOrder>,
     /// The challenge each asking player was given (used once).
     challenges: std::collections::HashMap<u32, String>,
     /// When wrong answers came lately (the lock counts them, whoever sent them: a player
     /// who reconnects is somebody new).
     failures: Vec<std::time::Instant>,
+}
+
+/// A dedicated server admin's order for the AI traffic.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum TrafficOrder {
+    Density(usize),
+    Clear,
+}
+
+impl TrafficOrder {
+    /// `clear`, or a density (held to 0 .. 100).
+    pub fn parse(arg: &str) -> Option<TrafficOrder> {
+        match arg.trim() {
+            "clear" => Some(TrafficOrder::Clear),
+            v => v.parse::<usize>().ok().map(|n| TrafficOrder::Density(n.min(100))),
+        }
+    }
 }
 
 /// Wrong answers within `LOCK_WINDOW` that lock the administration for everybody.
@@ -604,6 +623,13 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                                 lan.command(id, &format!("notify {}", rest.trim()));
                             }
                         }
+                    }
+                }
+                // the AI traffic: `traffic <density>` (as server.cfg's `traffic`) or `traffic
+                // clear` (every AI car off the road, a jam; the timetable's buses stay)
+                "traffic" => {
+                    if let Some(o) = TrafficOrder::parse(a) {
+                        adm.traffic = Some(o);
                     }
                 }
                 "bringall" => {
@@ -746,6 +772,22 @@ mod notice_target_tests {
         assert_eq!(notice_targets("1", [2, 5].into_iter(), 1), (vec![], true));
         // not a number: nobody
         assert_eq!(notice_targets("x", [2, 5].into_iter(), 1), (vec![], false));
+    }
+}
+
+#[cfg(test)]
+mod traffic_order_tests {
+    use super::TrafficOrder;
+
+    #[test]
+    fn a_traffic_order_is_read() {
+        assert_eq!(TrafficOrder::parse("clear"), Some(TrafficOrder::Clear));
+        assert_eq!(TrafficOrder::parse(" 20 "), Some(TrafficOrder::Density(20)));
+        assert_eq!(TrafficOrder::parse("0"), Some(TrafficOrder::Density(0)));
+        assert_eq!(TrafficOrder::parse("400"), Some(TrafficOrder::Density(100)));
+        for bad in ["", "next", "-5", "2.5"] {
+            assert_eq!(TrafficOrder::parse(bad), None, "{bad}");
+        }
     }
 }
 

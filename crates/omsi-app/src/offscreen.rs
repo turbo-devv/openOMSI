@@ -438,6 +438,25 @@ pub(crate) fn run_offscreen(
                     let now = (parse_time(&args.time) + srv_clock + srv_admin.shift).rem_euclid(86400.0);
                     srv_admin.shift += (want - now + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
                 }
+                // an admin's traffic order: the density asked for, or every AI car off the road
+                match srv_admin.traffic.take() {
+                    Some(crate::admin::TrafficOrder::Density(n)) => {
+                        if let Some(t) = traffic.as_mut() {
+                            t.target = n;
+                            log::info!("server: traffic density now {n}");
+                        }
+                    }
+                    Some(crate::admin::TrafficOrder::Clear) => {
+                        if let Some(t) = traffic.as_mut() {
+                            let ids: Vec<u64> = t.cars.iter().filter(|c| !c.is_bus()).map(|c| c.id).collect();
+                            for id in &ids {
+                                t.remove_car(&world, &renderer, &mut scene, *id);
+                            }
+                            log::info!("server: {} AI vehicles taken off the road", ids.len());
+                        }
+                    }
+                    None => {}
+                }
                 if let Some(want) = srv_admin.set_weather.take() {
                     // only an installed weather (the name came over the network)
                     let found = omsi_cfg::read_dir_merged("Weather")
@@ -476,6 +495,11 @@ pub(crate) fn run_offscreen(
             if i % 30 == 0 {
                 if let Some(l) = lan_off.as_ref() {
                     crate::server::tick_status(l, parse_time(&args.time) + srv_clock + srv_admin.shift, srv_weather_name.as_str());
+                    // the shared world, counted for GET /status
+                    let (cars, buses, dormant, parked) = traffic.as_ref().map(|t| t.counts()).unwrap_or_default();
+                    let (walking, waiting, aboard) = humans_off.as_ref().map(|h| h.counts()).unwrap_or_default();
+                    let target = traffic.as_ref().map(|t| t.target).unwrap_or(0);
+                    crate::lan::update_server_world(omsi_net::ws::WorldCounts { cars, buses, dormant, parked, walking, waiting, aboard, traffic: target });
                 }
             }
             if lan_off.is_none() {
