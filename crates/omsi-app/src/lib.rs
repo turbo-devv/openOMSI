@@ -398,6 +398,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         }
     }
     let mut lan_game = lan::LanGame::default();
+    lan::ask_joined_vehicles(args.lan_join.clone().filter(|_| args.export_glb.is_none()));
     if args.export_glb.is_none() && args.lan_join.is_some() {
         if let Some(t) = lan.as_ref().and_then(lan::host_time_now) {
             args.time = t;

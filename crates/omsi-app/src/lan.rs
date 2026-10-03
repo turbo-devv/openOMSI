@@ -816,6 +816,32 @@ pub fn publish_vehicles(root: PathBuf, only: Vec<String>) {
     });
 }
 
+/// The buses the host or server we joined offers (its status page), for the game's own
+/// "Place a vehicle" and "Swap" (#1183). None: any - not joined, or it has not said.
+static JOINED_VEHICLES: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// Ask the host or server at `join` which buses it offers (in the background; forgotten
+/// when not joining).
+pub fn ask_joined_vehicles(join: Option<String>) {
+    *JOINED_VEHICLES.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let Some(target) = join else { return };
+    let _ = std::thread::Builder::new().name("joined vehicles".into()).spawn(move || {
+        match omsi_net::ws::query(&target, false) {
+            Ok(i) if !i.vehicles.is_empty() => {
+                log::info!("LAN: the host offers {} buses", i.vehicles.len());
+                *JOINED_VEHICLES.lock().unwrap_or_else(|e| e.into_inner()) = Some(i.vehicles);
+            }
+            Ok(_) => {}
+            Err(e) => log::info!("LAN: the host does not say which buses it offers ({e})"),
+        }
+    });
+}
+
+/// The buses the host or server we joined offers (None: any).
+pub fn joined_vehicles() -> Option<Vec<String>> {
+    JOINED_VEHICLES.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// The port of the WebSocket gateway this game opened.
 fn port_of_gateway() -> Option<u16> {
     WS_PATH.lock().ok()?.as_ref()?.gateway.as_ref().map(|g| g.addr.port())
@@ -2281,9 +2307,7 @@ fn remote_type(
     player: Option<&Player>,
 ) -> Option<(Arc<omsi_sim::VehicleType>, bool)> {
     let allowed = crate::server::SERVER_VEHICLES.get().filter(|l| !l.is_empty());
-    let norm = |s: &str| s.trim().replace('\\', "/").to_ascii_lowercase();
-    let listed = allowed.map(|l| l.iter().any(|v| norm(v) == norm(&pose.bus) || norm(&pose.bus).ends_with(&norm(v)))).unwrap_or(true);
-    let loaded = if listed {
+    let loaded = if allowed.is_none_or(|l| crate::server::allows(l, &pose.bus)) {
         remote_bus_file(args, &pose.bus).and_then(|path| omsi_sim::VehicleType::load(&args.root, &path).map_err(|e| e.to_string()))
     } else {
         Err("the server does not offer it".to_string())

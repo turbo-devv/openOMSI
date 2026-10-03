@@ -2356,6 +2356,12 @@ impl App {
     pub(crate) fn place_vehicle(&mut self, bus: &str, paint: Option<String>, hof: Option<String>) {
         // (in the driven vehicle's place, see `swap_pending`)
         let swap = std::mem::take(&mut self.swap_pending) && self.player.is_some();
+        // (joined: the host or server offers only its buses - a plugin or input script asks by
+        // file, past the menu, #1183)
+        if crate::lan::joined_vehicles().is_some_and(|a| !crate::server::allows(&a, bus)) {
+            self.service_msg = Some(("The server does not offer this bus".into(), 4.0));
+            return;
+        }
         let name = self.vehicle_list.iter().find(|v| v.1 == bus).map(|v| v.0.clone()).unwrap_or_else(|| bus.to_string());
         let bus = bus.to_string();
         let (Some(w), Some(r), Some(scene), Some(cam)) = (self.world.clone(), self.renderer.as_ref(), self.scene.as_mut(), self.camera.as_ref()) else { return };
@@ -2841,7 +2847,14 @@ impl App {
                     self.vehicle_list.sort_by_key(|v| v.0.to_lowercase());
                     crate::mt::protect(self.vehicle_list.iter().map(|v| v.0.as_str()));
                 }
-                if self.vehicle_list.is_empty() {
+                // (joined: only the buses the host or server offers, #1183)
+                let offered = crate::lan::joined_vehicles();
+                if let Some(a) = offered.as_ref() {
+                    self.vehicle_list.retain(|v| crate::server::allows(a, &v.1));
+                }
+                if self.vehicle_list.is_empty() && offered.is_some() {
+                    self.service_msg = Some(("The server offers none of the buses installed here".into(), 4.0));
+                } else if self.vehicle_list.is_empty() {
                     self.service_msg = Some(("No vehicles found".into(), 3.0));
                 } else {
                     // (as the launcher's bus step: the manufacturer, then the type)

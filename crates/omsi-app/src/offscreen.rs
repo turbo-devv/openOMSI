@@ -474,7 +474,8 @@ pub(crate) fn run_offscreen(
                 break;
             }
             if i % 30 == 0 {
-                if let Some(l) = lan_off.as_ref() {
+                if let Some(l) = lan_off.as_mut() {
+                    crate::server::enforce_vehicles(l);
                     crate::server::tick_status(l, parse_time(&args.time) + srv_clock + srv_admin.shift, srv_weather_name.as_str());
                 }
             }
