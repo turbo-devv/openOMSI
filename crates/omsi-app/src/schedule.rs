@@ -3415,6 +3415,8 @@ pub struct PlayerDuty {
     arrived_late: Option<f64>,
     /// The bus has reached the last stop of the current trip.
     done: bool,
+    /// The last stop where this trip actually stopped with a passenger door open.
+    served_terminus: Option<glam::DVec3>,
     /// How late (s, negative = early) the bus left the last stop it served on this trip;
     /// None while it has not left one.
     left_late: Option<f64>,
@@ -3780,6 +3782,7 @@ impl Schedule {
             at_stop: false,
             arrived_late: None,
             done: false,
+            served_terminus: None,
             left_late: None,
             held_back: false,
             placed: false,
@@ -4372,6 +4375,7 @@ impl PlayerDuty {
     /// `place` has it): `catch_up` may then look as far as the last stop and `delay`
     /// counts from there. Saved at the last stop, the trip is over.
     pub fn restore_progress(&mut self, stop: usize, pos: glam::DVec3) {
+        self.served_terminus = None;
         let last = self.trip().stops.len().saturating_sub(1);
         self.next_stop = stop.min(last);
         self.left_late = (self.next_stop > 0).then_some(0.0);
@@ -4412,6 +4416,7 @@ impl PlayerDuty {
         let back = stop < self.next_stop;
         self.next_stop = stop;
         self.at_stop = false;
+        self.served_terminus = None;
         self.arrived_late = None;
         if back {
             self.done = false;
@@ -4425,6 +4430,7 @@ impl PlayerDuty {
         self.next_stop = 0;
         self.at_stop = false;
         self.done = false;
+        self.served_terminus = None;
         self.left_late = None;
         self.held_back = false;
         self.trip_changed = true;
@@ -4473,8 +4479,67 @@ impl PlayerDuty {
         let day_time = self.duty_time(day_time);
         self.heading = bus.heading;
         let served = self.advance(bus.position, day_time);
+        if self.done
+            && self.at_stop
+            && bus.physics.velocity_kmh().abs() < 0.36
+            && Self::doors_open(bus)
+        {
+            self.served_terminus = self.trip().stops.last().and_then(|stop| stop.position);
+        }
+        if self.trip_index + 1 < self.trips.len()
+            && self
+                .served_terminus
+                .is_some_and(|stop| (bus.position - stop).length() >= 60.0)
+        {
+            let terminus = self.served_terminus.unwrap();
+            self.set_trip(self.trip_index + 1);
+            // This trip has begun, however early it is. Do not place it again or skip it
+            // as an unbegun trip on a subsequent update.
+            self.picked = true;
+            self.left_late = Some(day_time - self.trip().departure);
+            if self
+                .trip()
+                .stops
+                .first()
+                .and_then(|stop| stop.position)
+                .is_some_and(|start| (start - terminus).length() < AT_STOP)
+            {
+                self.next_stop = 1.min(self.trip().stops.len().saturating_sub(1));
+            }
+            self.advance(bus.position, day_time);
+        }
         self.feed_host(bus, day_time);
         served
+    }
+
+    fn doors_open(bus: &omsi_sim::VehicleInstance) -> bool {
+        let mut reports_passenger_doors = false;
+        let mut passenger_door_open = false;
+        for i in 0..8 {
+            for kind in ["Entry", "Exit"] {
+                let name = format!("PAX_{kind}{i}_Open");
+                if bus.has_script_var(&name)
+                    || bus
+                        .ty
+                        .program
+                        .var(&name)
+                        .is_some_and(|id| bus.ty.program.stores(id))
+                {
+                    reports_passenger_doors = true;
+                    passenger_door_open |= bus.var(&name).unwrap_or(0.0) > 0.5;
+                }
+            }
+        }
+        if reports_passenger_doors {
+            passenger_door_open
+        } else {
+            (0..8).any(|i| {
+                bus.var(&format!("door_{i}"))
+                    .or_else(|| bus.var(&format!("door{i}")))
+                    .unwrap_or(0.0)
+                    > 0.5
+            })
+        }
     }
 
     /// Supply restored timetable data before the first resumed script frame.
@@ -4955,6 +5020,10 @@ mod tests {
     /// A vehicle whose script drops its duty and destination while it has no timetable,
     /// and shows what the timetable callbacks tell it.
     fn timetable_test_vehicle() -> omsi_sim::VehicleInstance {
+        timetable_test_vehicle_with_door("door_0")
+    }
+
+    fn timetable_test_vehicle_with_door(door: &str) -> omsi_sim::VehicleInstance {
         use std::sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -4969,7 +5038,11 @@ mod tests {
         let script = dir.join("device.osc");
         let vars = dir.join("vars.txt");
         let strings = dir.join("strings.txt");
-        std::fs::write(&vars, "duty\nobserved_stop\nobserved_delay\n").unwrap();
+        std::fs::write(
+            &vars,
+            format!("duty\nobserved_stop\nobserved_delay\n{door}\n"),
+        )
+        .unwrap();
         std::fs::write(&strings, "destination\nobserved_line\n").unwrap();
         std::fs::write(
             &script,
@@ -5013,6 +5086,114 @@ mod tests {
         omsi_sim::VehicleInstance::new(ty, omsi_sim::VehicleHost::new(Default::default()))
     }
 
+    fn early_departure_duty() -> PlayerDuty {
+        PlayerDuty {
+            line: "5".into(),
+            tour: "1".into(),
+            trips: vec![
+                planned(100.0, &[(0.0, 100.0, 100.0), (500.0, 200.0, 200.0)]),
+                planned(600.0, &[(500.0, 600.0, 600.0), (1000.0, 700.0, 700.0)]),
+                planned(900.0, &[(1000.0, 900.0, 900.0), (1500.0, 1000.0, 1000.0)]),
+            ],
+            trip_index: 0,
+            first_trip: 0,
+            next_stop: 1,
+            at_stop: false,
+            arrived_late: None,
+            done: false,
+            served_terminus: None,
+            left_late: Some(0.0),
+            held_back: false,
+            placed: true,
+            trip_changed: false,
+            picked: true,
+            first_update: None,
+            heading: 90.0,
+        }
+    }
+
+    #[test]
+    fn serving_the_terminus_then_leaving_60m_starts_the_next_trip_early() {
+        for door in ["door_0", "PAX_Exit0_Open"] {
+            let mut duty = early_departure_duty();
+            let mut bus = timetable_test_vehicle_with_door(door);
+            bus.position.x = 500.0;
+            bus.set_var(door, 1.0);
+            duty.update(&mut bus, 150.0);
+            assert_eq!(duty.trip_index, 0, "opening a door does not depart");
+            bus.set_var(door, 0.0);
+            bus.set_speed(5.0);
+            bus.position.x = 559.9;
+            assert_eq!(duty.update(&mut bus, 160.0), Some((-50.0, -40.0)));
+            assert_eq!(duty.trip_index, 0, "less than 60 m away");
+            bus.position.x = 560.0;
+            duty.update(&mut bus, 161.0);
+            assert_eq!((duty.trip_index, duty.next_stop), (1, 1));
+            assert_eq!(bus.host.tt_busstop_index, 1);
+            assert_eq!(bus.host.tt_stops[0].1, 600.0);
+            assert_eq!(duty.delay(161.0), -439.0);
+            assert!(duty.take_trip_change());
+            duty.update(&mut bus, 162.0);
+            assert!(!duty.take_trip_change());
+            assert_eq!(duty.trip_index, 1, "advance exactly one trip");
+            // The previous trip's door opening cannot finish the next trip too.
+            bus.position.x = 1000.0;
+            duty.update(&mut bus, 200.0);
+            bus.position.x = 1060.0;
+            duty.update(&mut bus, 210.0);
+            assert_eq!(duty.trip_index, 1);
+        }
+    }
+
+    #[test]
+    fn early_trip_progress_requires_stopping_with_a_door_open_at_the_last_stop() {
+        for (speed, open) in [(5.0, 1.0), (0.0, 0.0)] {
+            let mut duty = early_departure_duty();
+            let mut bus = timetable_test_vehicle();
+            // Doors opened at another stop do not serve the terminus.
+            bus.set_var("door_0", 1.0);
+            duty.update(&mut bus, 140.0);
+            bus.position.x = 500.0;
+            bus.set_speed(speed);
+            bus.set_var("door_0", open);
+            duty.update(&mut bus, 150.0);
+            bus.position.x = 560.0;
+            bus.set_speed(5.0);
+            bus.set_var("door_0", 0.0);
+            duty.update(&mut bus, 160.0);
+            assert_eq!(duty.trip_index, 0);
+        }
+    }
+
+    #[test]
+    fn waiting_at_the_terminus_still_uses_the_scheduled_changeover() {
+        let mut duty = early_departure_duty();
+        let mut bus = timetable_test_vehicle();
+        bus.position.x = 500.0;
+        bus.set_var("door_0", 1.0);
+        duty.update(&mut bus, 150.0);
+        duty.update(&mut bus, 539.0);
+        assert_eq!(duty.trip_index, 0);
+        duty.update(&mut bus, 540.0);
+        assert_eq!((duty.trip_index, duty.next_stop), (1, 0));
+        assert!(duty.served_terminus.is_none());
+    }
+
+    #[test]
+    fn early_departure_does_not_run_past_the_end_of_the_duty() {
+        let mut duty = early_departure_duty();
+        duty.trips.truncate(1);
+        let mut bus = timetable_test_vehicle();
+        bus.position.x = 500.0;
+        bus.set_var("door_0", 1.0);
+        duty.update(&mut bus, 150.0);
+        bus.position.x = 560.0;
+        bus.set_speed(5.0);
+        duty.update(&mut bus, 160.0);
+        assert_eq!(duty.trip_index, 0);
+        assert!(duty.done);
+    }
+
     #[test]
     fn resumed_duty_keeps_its_trip_and_stop_before_the_first_script_frame() {
         let trips = vec![
@@ -5037,6 +5218,7 @@ mod tests {
             at_stop: false,
             arrived_late: None,
             done: false,
+            served_terminus: None,
             left_late: None,
             held_back: false,
             placed: false,
@@ -5108,7 +5290,25 @@ mod tests {
         // stop 1's object was in no tile loaded when the duty began
         let mut t = planned(0.0, &[(0.0, 0.0, 0.0), (500.0, 100.0, 100.0), (1000.0, 200.0, 200.0)]);
         t.stops[1].position = None;
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![t], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let mut d = PlayerDuty {
+            line: "5".into(),
+            tour: "1".into(),
+            trips: vec![t],
+            trip_index: 0,
+            first_trip: 0,
+            next_stop: 0,
+            at_stop: false,
+            arrived_late: None,
+            done: false,
+            served_terminus: None,
+            left_late: None,
+            held_back: false,
+            placed: true,
+            trip_changed: false,
+            picked: true,
+            first_update: None,
+            heading: 90.0,
+        };
         d.advance(glam::DVec3::new(0.0, 0.0, 0.0), 0.0);
         d.advance(glam::DVec3::new(100.0, 0.0, 0.0), 10.0);
         assert_eq!(d.next_stop, 1);
@@ -5128,7 +5328,25 @@ mod tests {
         // stands at x = 1040, where trip 2 leaves from)
         let t1 = planned(0.0, &[(0.0, 0.0, 0.0), (500.0, 100.0, 100.0), (1000.0, 200.0, 200.0)]);
         let t2 = planned(400.0, &[(1040.0, 400.0, 400.0), (1500.0, 500.0, 500.0)]);
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![t1, t2], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let mut d = PlayerDuty {
+            line: "5".into(),
+            tour: "1".into(),
+            trips: vec![t1, t2],
+            trip_index: 0,
+            first_trip: 0,
+            next_stop: 0,
+            at_stop: false,
+            arrived_late: None,
+            done: false,
+            served_terminus: None,
+            left_late: None,
+            held_back: false,
+            placed: true,
+            trip_changed: false,
+            picked: true,
+            first_update: None,
+            heading: 90.0,
+        };
         d.advance(glam::DVec3::new(0.0, 0.0, 0.0), 0.0);
         d.advance(glam::DVec3::new(100.0, 0.0, 0.0), 10.0);
         d.advance(glam::DVec3::new(500.0, 0.0, 0.0), 100.0);
@@ -5144,15 +5362,59 @@ mod tests {
         // a bus still on its way (not at trip 2's first stop) stays on trip 1
         let t1 = planned(0.0, &[(0.0, 0.0, 0.0), (500.0, 100.0, 100.0), (1000.0, 200.0, 200.0)]);
         let t2 = planned(400.0, &[(1040.0, 400.0, 400.0), (1500.0, 500.0, 500.0)]);
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![t1, t2], trip_index: 0, first_trip: 0, next_stop: 2, at_stop: false, arrived_late: None, done: false, left_late: Some(0.0), held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let mut d = PlayerDuty {
+            line: "5".into(),
+            tour: "1".into(),
+            trips: vec![t1, t2],
+            trip_index: 0,
+            first_trip: 0,
+            next_stop: 2,
+            at_stop: false,
+            arrived_late: None,
+            done: false,
+            served_terminus: None,
+            left_late: Some(0.0),
+            held_back: false,
+            placed: true,
+            trip_changed: false,
+            picked: true,
+            first_update: None,
+            heading: 90.0,
+        };
         d.advance(glam::DVec3::new(800.0, 0.0, 0.0), 345.0);
         assert_eq!(d.trip_index, 0);
     }
 
     #[test]
     fn a_page_can_go_back_to_an_earlier_stop() {
-        let trip = planned(0.0, &[(0.0, 0.0, 0.0), (100.0, 60.0, 60.0), (500.0, 120.0, 120.0), (1000.0, 200.0, 200.0)]);
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let trip = planned(
+            0.0,
+            &[
+                (0.0, 0.0, 0.0),
+                (100.0, 60.0, 60.0),
+                (500.0, 120.0, 120.0),
+                (1000.0, 200.0, 200.0),
+            ],
+        );
+        let mut d = PlayerDuty {
+            line: "5".into(),
+            tour: "1".into(),
+            trips: vec![trip],
+            trip_index: 0,
+            first_trip: 0,
+            next_stop: 0,
+            at_stop: false,
+            arrived_late: None,
+            done: false,
+            served_terminus: None,
+            left_late: None,
+            held_back: false,
+            placed: true,
+            trip_changed: false,
+            picked: true,
+            first_update: None,
+            heading: 90.0,
+        };
         assert!(d.skip_to(2));
         assert_eq!(d.next_stop, 2);
         // back one stop: due again
@@ -5184,7 +5446,25 @@ mod tests {
             }
         }
         trip.set_dirs();
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let mut d = PlayerDuty {
+            line: "5".into(),
+            tour: "1".into(),
+            trips: vec![trip],
+            trip_index: 0,
+            first_trip: 0,
+            next_stop: 0,
+            at_stop: false,
+            arrived_late: None,
+            done: false,
+            served_terminus: None,
+            left_late: None,
+            held_back: false,
+            placed: true,
+            trip_changed: false,
+            picked: true,
+            first_update: None,
+            heading: 90.0,
+        };
         // at stop 0, then leaving east
         d.advance(glam::DVec3::new(0.0, 0.0, 0.0), 0.0);
         d.advance(glam::DVec3::new(60.0, 0.0, 0.0), 30.0);
@@ -5243,6 +5523,7 @@ mod tests {
             at_stop: false,
             arrived_late: None,
             done: false,
+            served_terminus: None,
             left_late: None,
             held_back: false,
             placed: false,
@@ -5293,6 +5574,7 @@ mod tests {
             at_stop: false,
             arrived_late: None,
             done: false,
+            served_terminus: None,
             left_late: None,
             held_back: false,
             placed: false,
@@ -5334,6 +5616,7 @@ mod tests {
             at_stop: false,
             arrived_late: None,
             done: false,
+            served_terminus: None,
             left_late: None,
             held_back: false,
             placed: false,
