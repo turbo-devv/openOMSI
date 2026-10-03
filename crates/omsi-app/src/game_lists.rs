@@ -810,6 +810,8 @@ fn steps_of(verb: &str) -> Option<Vec<f32>> {
         "fov" => std::iter::once(0.0).chain((20..=120).map(|v| v as f32)).collect(),
         "steer_look_angle" => (0..=60).map(|v| v as f32).collect(),
         "steer_look_response" => (1..=20).map(|v| v as f32 * 0.05).collect(),
+        "head_idle" => (0..=20).map(|v| v as f32 * 0.05).collect(),
+        "head_idle_pace" => (10..=40).map(|v| v as f32 * 0.05).collect(),
         "pedal_t" | "pedal_b" => PEDAL.to_vec(),
         "mouse_sens" => (10..=300).map(|v| v as f32 / 100.0).collect(),
         "look_sens" => (2..=40).map(|v| v as f32 * 0.05).collect(),
@@ -958,6 +960,8 @@ fn option_now(app: &App, verb: &str, arg: &str) -> Option<f32> {
         }
         "steer_look_angle" => s.steer_look_angle,
         "steer_look_response" => s.steer_look_response,
+        "head_idle" => s.head_idle,
+        "head_idle_pace" => s.head_idle_pace,
         "seat" => s.seat[arg.trim().parse::<usize>().unwrap_or(0).min(2)],
         "hour" => ((app.clock.time / 3600.0) as i64).rem_euclid(24) as f32,
         "minute" => (((app.clock.time / 60.0) as i64) % 60) as f32,
@@ -1096,6 +1100,14 @@ fn option_set(app: &mut App, verb: &str, arg: &str, v: f32) -> Option<(&'static 
         "steer_look_response" => {
             app.settings.steer_look_response = (v * 100.0).round() / 100.0;
             Some(("steer_look_response", app.settings.steer_look_response.to_string()))
+        }
+        "head_idle" => {
+            app.settings.head_idle = (v * 100.0).round() / 100.0;
+            Some(("head_idle", app.settings.head_idle.to_string()))
+        }
+        "head_idle_pace" => {
+            app.settings.head_idle_pace = (v * 100.0).round() / 100.0;
+            Some(("head_idle_pace", app.settings.head_idle_pace.to_string()))
         }
         "seat" => {
             let k: usize = arg.trim().parse().unwrap_or(0).min(2);
@@ -2004,6 +2016,8 @@ fn options_pages(app: &App) -> Vec<Page> {
         switch_row(app, "steer_look", "View turns with steering", "Camera turns with the steering wheel (cockpit only)"),
         slider_row(app, "steer_look_angle", "Steering view angle", "How far the view turns at full steering lock", &|v| format!("{v:.0}°")),
         slider_row(app, "steer_look_response", "Steering view response", "How quickly the view follows the steering", &|v| format!("{:.0} ms", v * 1000.0)),
+        slider_row(app, "head_idle", "Head sway at a standstill", "How much the view sways on its own when nothing is done to it - a head at rest is never quite still, most of it seen while the bus waits at a stop", &|v| if v <= 0.0 { "Off".to_string() } else { format!("{:.0}%", v * 100.0) }),
+        slider_row(app, "head_idle_pace", "Sway pace", "How fast that sway moves (100% is the pace it is designed at)", &|v| format!("{:.0}%", v * 100.0)),
         switch_row(app, "hands_in_cab", "Driver's hands in the cab view", "Shows the driver's hand on the steering wheel (Cockpit only)"),
         switch_row(app, "driver", "Driver at the wheel (outside views)", "Shows the driver in the outside views and in the mirrors"),
         switch_row(app, "headtrack", "Head tracking", &format!("Head tracking with opentrack (UDP port {})", s.head_tracking_port)),

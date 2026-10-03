@@ -907,6 +907,19 @@ impl ApplicationHandler for App {
                         #[cfg(not(windows))]
                         let vr_on = false;
                         p.move_head(dt, self.settings.head_movement && !vr_on);
+                        // (a head that is doing nothing still breathes and shifts its weight:
+                        // the sway goes on the head and the view while the bus waits, never
+                        // into the springs above. Nothing of it while a headset or a real
+                        // head tracker moves the head - that head is not a still one)
+                        let idle = if vr_on || (self.settings.head_tracking && self.headtrack.is_some()) { 0.0 } else { self.settings.head_idle };
+                        // (a switch under the cursor is a hand reaching for it, and a view that
+                        // goes on sliding under the pointer is a view that misses what it was
+                        // reaching for. Held, not reset: the camera stays where it is, which is
+                        // where any camera is while the player is busy with something)
+                        let reaching = idle > 0.0 && (self.hover.is_some() || self.hover_hand);
+                        if !self.head_idle_hold.step(dt, reaching) {
+                            p.move_head_idle(dt, idle, self.settings.head_idle_pace);
+                        }
                         if let Some(w) = self.world.as_ref() {
                             crate::rail_drive::frame(p, self.traffic.as_ref().map(|t| &t.net), w, dt);
                         }
@@ -1014,11 +1027,20 @@ impl ApplicationHandler for App {
                             });
                             let fov_setting = self.settings.fov;
                             let zoom = self.view_zoom.get(&self.view).copied();
+                            // The sway's own turn of the view: the driver's view only, for it is
+                            // his head (and nothing at all while the sway is off or driven by a
+                            // head tracker - `head_idle` is still then).
+                            let idle_rot = (self.view == "driver" && !p.head_idle.is_still()).then(|| [p.head_idle.yaw, p.head_idle.pitch, p.head_idle.roll]);
                             let finish = move |c: &mut omsi_render::Camera| {
                                 if let Some(r) = tracked_rot {
                                     c.yaw += r[0].clamp(-170.0, 170.0);
                                     c.pitch = (c.pitch + r[1].clamp(-80.0, 80.0)).clamp(-89.0, 89.0);
                                     c.roll += r[2].clamp(-60.0, 60.0);
+                                }
+                                if let Some(r) = idle_rot {
+                                    c.yaw += r[0];
+                                    c.pitch = (c.pitch + r[1]).clamp(-89.0, 89.0);
+                                    c.roll += r[2];
                                 }
                                 // Settings → Field of view (0: the bus's own cameras)
                                 if fov_setting >= 20.0 {
@@ -1050,9 +1072,10 @@ impl ApplicationHandler for App {
                                             // taken off the walker's eyes, and the zoom `finish` applies again off
                                             // its field of view: the first frame then is the walker's picture)
                                             let mut f = p.local_of_world(&prev_cam);
-                                            f.pos[0] -= p.head.x + p.seat.x;
-                                            f.pos[1] -= p.head.y + p.seat.y;
-                                            f.pos[2] -= p.head.z + p.seat.z;
+                                            let head = p.head_offset();
+                                            f.pos[0] -= head.x + p.seat.x;
+                                            f.pos[1] -= head.y + p.seat.y;
+                                            f.pos[2] -= head.z + p.seat.z;
                                             if let Some(z) = zoom.filter(|z| *z > 0.0) {
                                                 f.fov /= z;
                                             }

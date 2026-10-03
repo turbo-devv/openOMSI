@@ -119,6 +119,9 @@ pub(crate) struct App {
     pub(crate) hover_part: Option<String>,
     /// A `[mouseevent]` mesh is under the cursor (named in `hover` or not): the hand cursor.
     pub(crate) hover_hand: bool,
+    /// The idle head sway waiting where it is while the cursor is on a control
+    /// (see `head_idle::Hold`).
+    pub(crate) head_idle_hold: crate::head_idle::Hold,
     /// `OMSI_INPUT` script: (seconds after start, command), in order.
     pub(crate) input_script: Vec<(f32, String)>,
     /// `shot <file>` of the input script: the next frame is also rendered into this PNG.

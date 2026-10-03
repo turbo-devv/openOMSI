@@ -321,7 +321,7 @@ pub(crate) fn driver_eye(p: &Player) -> DVec3 {
     let def = &p.vehicle.ty.def;
     let n = def.cameras_driver.len().max(1);
     match def.cameras_driver.get((def.camera_std + p.cam_choice.0) % n) {
-        Some(c) => p.vehicle.camera_world(c).0 + p.vehicle.body_rotation().transform_vector3(p.head + p.seat).as_dvec3(),
+        Some(c) => p.vehicle.camera_world(c).0 + p.vehicle.body_rotation().transform_vector3(p.head_offset() + p.seat).as_dvec3(),
         None => p.vehicle.position + DVec3::Z * 2.0,
     }
 }
