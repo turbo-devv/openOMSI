@@ -66,3 +66,6 @@ opt-level = 1
 inherits = "release"
 debug = 0
 strip = "debuginfo"
+
+[patch.crates-io]
+gpu-allocator = { git = "https://github.com/ThiBot77/gpu-allocator", rev = "6ad8a7eeb9c3e1dcd65656f718c593a0a1a3915d" }
