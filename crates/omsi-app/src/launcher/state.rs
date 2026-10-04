@@ -1199,8 +1199,8 @@ pub fn root_problem(root: &str) -> String {
 /// adapter", a fatal message) and the last lines of the log. None for a game that ended as
 /// it should.
 pub fn crash_of(log: &std::path::Path) -> Option<(String, String)> {
-    let text = std::fs::read(log).ok()?;
-    let text = String::from_utf8_lossy(&text[text.len().saturating_sub(64 * 1024)..]).to_string();
+    let bytes = std::fs::read(log).ok()?;
+    let text = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(64 * 1024)..]).to_string();
     let all: Vec<&str> = text.lines().collect();
     // (the run itself only: an error the launcher logged before the game started - a
     // preview's picture left out - titled the report of a game that died much later, and
@@ -1226,16 +1226,30 @@ pub fn crash_of(log: &std::path::Path) -> Option<(String, String)> {
     let first = lines[at].split_once("] ").map(|x| x.1).unwrap_or(lines[at]).trim();
     // (a panic's message is on the following lines)
     let mut what = first.to_string();
+    // (and stops at the next record: a lost device's line had "game ends" and the tile
+    // loading after it in the report's title, #1187)
     for l in lines.iter().skip(at + 1).take(6) {
-        if l.trim().is_empty() || l.trim_start().starts_with("0:") {
+        if l.trim().is_empty() || l.trim_start().starts_with("0:") || l.starts_with('[') {
             break;
         }
         what.push(' ');
         what.push_str(l.trim());
     }
-    let tail = all[all.len().saturating_sub(150)..].join("\n");
+    // the computer, its graphics card and the command line (the map) from the start of the
+    // run, before the end of the log and a line `…`: a report of the end alone never said
+    // what it happened on (#1187). Its GitHub link keeps them and shortens only the end.
+    let whole = String::from_utf8_lossy(&bytes);
+    let machine: Vec<&str> = MACHINE_LINES.iter().filter_map(|k| whole.lines().rfind(|l| l.contains(k))).collect();
+    let end = all[all.len().saturating_sub(150)..].join("\n");
+    let tail = if machine.is_empty() { end } else { format!("{}\n{CRASH_TAIL_GAP}\n{end}", machine.join("\n")) };
     Some((what.chars().take(600).collect(), tail))
 }
+
+/// The log lines that tell what a game ran on (see `crash_of`).
+const MACHINE_LINES: [&str; 4] = ["] system: ", "] graphics adapter: ", "] opening graphics device: ", "] command line: "];
+
+/// The line between the machine and the end of the log in a crash's tail.
+pub const CRASH_TAIL_GAP: &str = "…";
 
 #[cfg(test)]
 mod choice_tests {
@@ -1292,6 +1306,28 @@ mod crash_tests {
         // an error before the game started, or one it got over, is not the crash
         std::fs::write(&p, "[t ERROR omsi_render] a part of the picture could not be recorded (left out)\n[t INFO x] starting the game: omsi\n[t INFO omsi_render] renderer: compiling the sky and clouds shaders\n").unwrap();
         assert!(super::crash_of(&p).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The report says what the game ran on (the start of the log), and its title is the
+    /// error alone, not the records after it (#1187).
+    #[test]
+    fn the_report_has_the_computer_and_a_clean_title() {
+        let dir = std::env::temp_dir().join(format!("openomsi-crash-machine-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("game.log");
+        let mut log = String::from("[t INFO openomsi_game::applog] system: windows x86_64 (10.0), 8 threads, 8192 MB memory\n[t INFO openomsi_game::applog] command line: openomsi --map maps/X/global.cfg\n[t INFO omsi_render] graphics adapter: GTX 750 (DiscreteGpu, Dx12, 2048 MB of its own), texture memory taken for it: 716 MB\n");
+        // (more than the end that goes with the report)
+        for k in 0..400 {
+            log.push_str(&format!("[t INFO openomsi_game::scene] tile loading: placed tile {k},0\n"));
+        }
+        log.push_str("[t ERROR openomsi_game::app_events] ending the session: the graphics device was lost (Unknown: Out of memory)\n[t INFO openomsi_game::app_events] game ends\n[t WARN openomsi_game::scene] tile loading: first-area batch prepared in 352.71 s\n");
+        std::fs::write(&p, log).unwrap();
+        let (what, tail) = super::crash_of(&p).unwrap();
+        assert_eq!(what, "ending the session: the graphics device was lost (Unknown: Out of memory)");
+        let (machine, end) = tail.split_once(&format!("\n{}\n", super::CRASH_TAIL_GAP)).unwrap();
+        assert!(machine.contains("8192 MB memory") && machine.contains("GTX 750") && machine.contains("maps/X/global.cfg"), "{machine}");
+        assert!(end.contains("352.71 s") && !end.contains("placed tile 0,0"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

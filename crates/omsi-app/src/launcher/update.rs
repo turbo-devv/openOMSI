@@ -248,16 +248,16 @@ impl Launcher {
             // the end of the log goes with it, as much as a link holds (a report of the
             // last line alone said where the game stopped, never what led there); the whole
             // report is on the clipboard as well
-            let lines: Vec<&str> = tail.lines().collect();
+            // (the computer and the map always, see `crash_of`)
+            let (machine, end) = tail.split_once(&format!("\n{}\n", super::state::CRASH_TAIL_GAP)).unwrap_or(("", &tail));
+            let machine = if machine.is_empty() { String::new() } else { format!("The computer:\n```\n{machine}\n```\n\n") };
+            let body_with = |end: &str| format!("openOMSI {} on {}\n\n```\n{what}\n```\n\n{machine}The end of the log:\n```\n{end}\n```\n", updater::current_version(), std::env::consts::OS);
+            let lines: Vec<&str> = end.lines().collect();
             let mut shown = 0;
             let body = loop {
-                let end = lines[lines.len() - shown..].join("\n");
-                let body = format!("openOMSI {} on {}\n\n```\n{what}\n```\n\nThe end of the log:\n```\n{end}\n```\n", updater::current_version(), std::env::consts::OS);
+                let body = body_with(&lines[lines.len() - shown..].join("\n"));
                 if shown >= lines.len() || enc(&body).len() > 6500 {
-                    break if shown == 0 { body } else {
-                        let end = lines[lines.len() - shown.saturating_sub(1)..].join("\n");
-                        format!("openOMSI {} on {}\n\n```\n{what}\n```\n\nThe end of the log:\n```\n{end}\n```\n", updater::current_version(), std::env::consts::OS)
-                    };
+                    break if shown == 0 { body } else { body_with(&lines[lines.len() - shown.saturating_sub(1)..].join("\n")) };
                 }
                 shown += 1;
             };
